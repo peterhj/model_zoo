@@ -1,0 +1,13 @@
+[package]
+name = "model_zoo"
+version = "0.0.1"
+authors = ["Peter Jin <peterhaijin@gmail.com>"]
+
+[lib]
+name = "model_zoo"
+path = "src/lib.rs"
+
+[dependencies]
+arraydiff = { path = "../arraydiff" }
+densearray = "*"
+devicemem_cuda = { path = "../libdevicemem_cuda" }
