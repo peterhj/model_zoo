@@ -4,12 +4,13 @@ use arraydiff::ops::cuda::*;
 use async_execution::*;
 use densearray::prelude::*;
 use devicemem_cuda::prelude::*;
+use superlearn::templates::*;
 
 use std::rc::{Rc};
 
 const EPSILON: f64 = 1.0e-12;
 
-pub fn linear_op_gpu<Op>(param_vars: &mut VarSet, x_: Rc<Op>) -> () where Op: ArrayOp<DeviceBatchArray1d<f32>> {
+pub fn linear_op_gpu<Op>(filters: usize, param_vars: &mut VarSet, x_: Rc<Op>) -> () where Op: ArrayOp<DeviceBatchArray1d<f32>> {
   unimplemented!();
 }
 
@@ -76,29 +77,26 @@ pub fn residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stats_cfg: BatchSt
     filters:    None,
   };
   let y_ = batch_norm_conv2d_op_gpu(shape1, stats_cfg, stats_ctrl, param_vars, x_.clone());
-  // TODO: add rectifier.
-  //let y_ = y_.rect();
+  let y_ = y_.rect();
   let y_ = batch_norm_conv2d_op_gpu(shape2, stats_cfg, stats_ctrl, param_vars, y_);
   let y_ = x_.add(y_);
-  // TODO: add rectifier.
-  //let y_ = y_.rect();
   y_
 }
 
-pub fn proj_residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stride: (usize, usize), filter: usize, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
+pub fn proj_residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stride: (usize, usize), filters: usize, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
   let proj_shape = ConvShape{
     axes:       axes,
     kernel:     (1, 1),
     stride:     stride,
     zero_pad:   true,
-    filters:    Some(filter),
+    filters:    Some(filters),
   };
   let shape1 = ConvShape{
     axes:       axes,
     kernel:     (3, 3),
     stride:     stride,
     zero_pad:   true,
-    filters:    Some(filter),
+    filters:    Some(filters),
   };
   let shape2 = ConvShape{
     axes:       axes,
@@ -109,12 +107,9 @@ pub fn proj_residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stride: (usiz
   };
   let proj_x_ = batch_norm_conv2d_op_gpu(proj_shape, stats_cfg, stats_ctrl, param_vars, x_.clone());
   let y_ = batch_norm_conv2d_op_gpu(shape1, stats_cfg, stats_ctrl, param_vars, x_.clone());
-  // TODO: add rectifier.
-  //let y_ = y_.rect();
+  let y_ = y_.rect();
   let y_ = batch_norm_conv2d_op_gpu(shape2, stats_cfg, stats_ctrl, param_vars, y_);
   let y_ = proj_x_.add(y_);
-  // TODO: add rectifier.
-  //let y_ = y_.rect();
   y_
 }
 
@@ -126,7 +121,7 @@ pub fn avg_pool_op_gpu() -> () {
   unimplemented!();
 }
 
-pub fn cifar10_resnet20_loss_gpu(batch_sz: usize) -> () {
+pub fn cifar10_resnet20_model_gpu(batch_sz: usize) -> CategoricalNLLLoss<DeviceBatchIoMem<u8>, DeviceIoBatch<u32>, DeviceBatchArray1d<f32>, DeviceIoBatch<f32>> {
   let mut input_vars = var_set();
   let mut label_vars = var_set();
   let mut prob_vars = var_set();
@@ -137,24 +132,70 @@ pub fn cifar10_resnet20_loss_gpu(batch_sz: usize) -> () {
 
   let frame_dim = (32, 32, 3);
   let frame_len = frame_dim.flat_len();
+  let conv_axes = Axes((0, 1));
   let stats_cfg = BatchStatsConfig{average: BatchStatsAverage::Geometric(0.01)};
   let mut stats_ctrl = BatchStatsControl::new();
 
-  let input = src(move |_, _| DeviceBatchIoMem::<u8>::with_capacity(frame_len, batch_sz));
-  input_vars = input_vars.union(input.vars());
-  let x = input.reify(frame_dim).cast();
-  let x_scale = src(move |_, _| 1.0_f32 / 255.0)
-    .initialize(init_val(|_, c: &mut f32| {
-      *c = 1.0 / 255.0;
-    }));
+  let input_ = src(move |_, _| DeviceBatchIoMem::<u8>::with_capacity(frame_len, batch_sz));
+  input_vars = input_vars.union(input_.vars());
+  let label_ = src(move |_, _| DeviceIoBatch::<u32>::zeros(batch_sz, DeviceStream::implicit().conn()));
+  label_vars = label_vars.union(label_.vars());
+
+  let x_ = input_.reify(frame_dim).cast();
+  let x_scale = src(move |_, _| 0.0_f32)
+    .initialize(init_val(|_, c: &mut f32| { *c = 1.0 / 255.0; }));
   const_vars = const_vars.union(x_scale.vars());
-  let x = x_scale.elem_mult(x);
+  let x_ = x_scale.elem_mult(x_);
 
-  // TODO
+  let y_ = batch_norm_conv2d_op_gpu(ConvShape{
+    axes:     conv_axes,
+    kernel:   (5, 5),
+    stride:   (1, 1),
+    zero_pad: true,
+    filters:  Some(16),
+  }, stats_cfg, &mut stats_ctrl, &mut param_vars, x_);
+  let y_ = y_.rect();
 
-  unimplemented!();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+
+  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 32, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+
+  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 64, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
+  let y_ = y_.rect();
+
+  let y_ = y_.flatten();
+  //let y_ = linear_op_gpu(&mut param_vars, y_);
+
+  let (prob_, loss_) = softmax_nll_loss(y_, label_.clone());
+  prob_vars = prob_vars.union(prob_.vars());
+  loss_vars = loss_vars.union(loss_.vars());
+  let scalar_loss_ = batch_sum(loss_.clone());
+  let obj = sink(scalar_loss_);
+
+  CategoricalNLLLoss{
+    x:        input_,
+    y_label:  label_,
+    y:        prob_,
+    loss:     loss_,
+    obj:      obj,
+  }
 }
 
-pub fn imagenet_resnet18_loss_gpu(batch_sz: usize) -> () {
+pub fn imagenet_resnet18_model_gpu(batch_sz: usize) -> CategoricalNLLLoss<DeviceBatchIoMem<u8>, DeviceIoBatch<u32>, DeviceBatchArray1d<f32>, DeviceIoBatch<f32>> {
+  // TODO
   unimplemented!();
 }
