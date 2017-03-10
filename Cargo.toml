@@ -9,5 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 arraydiff = { path = "../arraydiff" }
+async_execution = { path = "../async_execution" }
 densearray = "*"
 devicemem_cuda = { path = "../libdevicemem_cuda" }
+superlearn = { path = "../superlearn" }
