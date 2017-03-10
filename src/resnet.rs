@@ -10,8 +10,21 @@ use std::rc::{Rc};
 
 const EPSILON: f64 = 1.0e-12;
 
-pub fn linear_op_gpu<Op>(filters: usize, param_vars: &mut VarSet, x_: Rc<Op>) -> () where Op: ArrayOp<DeviceBatchArray1d<f32>> {
-  unimplemented!();
+pub fn linear_op_gpu<Op>(filters: usize, bias: bool, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray1d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray1d<f32>> {
+  let w1 = src({
+    let x = x_.data();
+    move |txn, node| {
+      let x_dim = x.val.get(txn, node).dim();
+      DeviceArray2d::<f32>::zeros((filters, x_dim), DeviceStream::implicit().conn())
+    }
+  }).initialize(init_val(xavier_linear_init_gpu()));
+
+  if !bias {
+    let y_ = w1.mult(x_);
+    y_
+  } else {
+    unimplemented!();
+  }
 }
 
 pub fn conv2d_op_gpu<Op>(shape: ConvShape<(usize, usize)>, bias: bool, param_vars: &mut VarSet, x_: Rc<Op>) -> () /*Rc<impl ArrayOp<DeviceBatchArray3d<f32>>>*/ where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
@@ -53,12 +66,12 @@ pub fn batch_norm_conv2d_op_gpu<Op>(shape: ConvShape<(usize, usize)>, stats_cfg:
   }).initialize(init_val(|_, w: &mut DeviceArray1d<f32>| w.as_view_mut().set_constant(0.0, DeviceStream::implicit().conn())));
   param_vars.insert_all(&b1.vars());
 
-  let y = w1.conv(shape, x_);
-  let y_stats = batch_stats(shape.axes, stats_cfg, stats_ctrl, y.clone());
-  let y = y.elem_normalize(shape.axes, EPSILON, y_stats.mean.clone(), y_stats.var.clone());
+  let y_ = w1.conv(shape, x_);
+  let y_stats = batch_stats(shape.axes, stats_cfg, stats_ctrl, y_.clone());
+  let y_ = y_.elem_normalize(shape.axes, EPSILON, y_stats.mean.clone(), y_stats.var.clone());
   // FIXME: this should really be a "broadcast mult-add" op.
-  let y = a1.elem_mult_add(/*Axes((0, 1)),*/ y, b1);
-  y
+  let y_ = a1.elem_mult_add(/*Axes((0, 1)),*/ y_, b1);
+  y_
 }
 
 pub fn residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
@@ -153,32 +166,22 @@ pub fn cifar10_resnet20_model_gpu(batch_sz: usize) -> CategoricalNLLLoss<DeviceB
     stride:   (1, 1),
     zero_pad: true,
     filters:  Some(16),
-  }, stats_cfg, &mut stats_ctrl, &mut param_vars, x_);
-  let y_ = y_.rect();
+  }, stats_cfg, &mut stats_ctrl, &mut param_vars, x_).rect();
 
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
 
-  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 32, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
+  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 32, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
 
-  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 64, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_);
-  let y_ = y_.rect();
+  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 64, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
 
   let y_ = y_.flatten();
-  //let y_ = linear_op_gpu(&mut param_vars, y_);
+  let y_ = linear_op_gpu(10, false, &mut param_vars, y_);
 
   let (prob_, loss_) = softmax_nll_loss(y_, label_.clone());
   prob_vars = prob_vars.union(prob_.vars());
