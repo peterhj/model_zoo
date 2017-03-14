@@ -50,11 +50,11 @@ pub fn conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, 
   }
 }
 
-pub fn batch_norm_conv2d_op_gpu<Op>(shape: ConvShape<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
+pub fn batch_norm_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
   let w1 = src({
-    let x = x_.data();
+    //let x = x_.data();
     move |txn, node| {
-      let x_dim = x.val.get(txn, node).dim();
+      //let x_dim = x.val.get(txn, node).dim();
       match shape.axes {
         Axes((0, 1)) => DeviceArray4d::<f32>::zeros(shape.conv2d_kernel_dim(x_dim), DeviceStream::implicit().conn()),
         _ => unimplemented!(),
@@ -63,9 +63,9 @@ pub fn batch_norm_conv2d_op_gpu<Op>(shape: ConvShape<(usize, usize)>, stats_cfg:
   }).initialize(init_val(kaiming_conv2d_init_gpu(shape.axes)));
   param_vars.insert_all(&w1.vars());
   let a1 = src({
-    let x = x_.data();
+    //let x = x_.data();
     move |txn, node| {
-      let x_dim = x.val.get(txn, node).dim();
+      //let x_dim = x.val.get(txn, node).dim();
       match shape.axes {
         Axes((0, 1)) => DeviceArray1d::<f32>::zeros(shape.conv2d_output_dim(x_dim).2, DeviceStream::implicit().conn()),
         _ => unimplemented!(),
@@ -74,9 +74,9 @@ pub fn batch_norm_conv2d_op_gpu<Op>(shape: ConvShape<(usize, usize)>, stats_cfg:
   }).initialize(init_val(|_, w: &mut DeviceArray1d<f32>| w.as_view_mut().set_constant(1.0, DeviceStream::implicit().conn())));
   param_vars.insert_all(&a1.vars());
   let b1 = src({
-    let x = x_.data();
+    //let x = x_.data();
     move |txn, node| {
-      let x_dim = x.val.get(txn, node).dim();
+      //let x_dim = x.val.get(txn, node).dim();
       match shape.axes {
         Axes((0, 1)) => DeviceArray1d::<f32>::zeros(shape.conv2d_output_dim(x_dim).2, DeviceStream::implicit().conn()),
         _ => unimplemented!(),
@@ -88,12 +88,12 @@ pub fn batch_norm_conv2d_op_gpu<Op>(shape: ConvShape<(usize, usize)>, stats_cfg:
   let y_ = w1.conv(shape, x_);
   let y_stats = batch_stats(shape.axes, stats_cfg, stats_ctrl, y_.clone());
   let y_ = y_.elem_normalize(shape.axes, EPSILON, y_stats.mean.clone(), y_stats.var.clone());
-  // FIXME: this should really be a "broadcast mult-add" op.
+  // TODO: this should really be a "broadcast mult-add" op.
   let y_ = a1.elem_mult_add(/*Axes((0, 1)),*/ y_, b1);
   y_
 }
 
-pub fn residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
+pub fn residual_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), axes: Axes<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
   let shape1 = ConvShape{
     axes:       axes,
     kernel:     (3, 3),
@@ -108,14 +108,14 @@ pub fn residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stats_cfg: BatchSt
     zero_pad:   true,
     filters:    None,
   };
-  let y_ = batch_norm_conv2d_op_gpu(shape1, stats_cfg, stats_ctrl, param_vars, x_.clone());
+  let y_ = batch_norm_conv2d_op_gpu(x_dim, shape1, stats_cfg, stats_ctrl, param_vars, x_.clone());
   let y_ = y_.rect();
-  let y_ = batch_norm_conv2d_op_gpu(shape2, stats_cfg, stats_ctrl, param_vars, y_);
+  let y_ = batch_norm_conv2d_op_gpu(x_dim, shape2, stats_cfg, stats_ctrl, param_vars, y_);
   let y_ = x_.add(y_);
   y_
 }
 
-pub fn proj_residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stride: (usize, usize), filters: usize, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
+pub fn proj_residual_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), axes: Axes<(usize, usize)>, stride: (usize, usize), filters: usize, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
   let proj_shape = ConvShape{
     axes:       axes,
     kernel:     (1, 1),
@@ -137,10 +137,12 @@ pub fn proj_residual_conv2d_op_gpu<Op>(axes: Axes<(usize, usize)>, stride: (usiz
     zero_pad:   true,
     filters:    None,
   };
-  let proj_x_ = batch_norm_conv2d_op_gpu(proj_shape, stats_cfg, stats_ctrl, param_vars, x_.clone());
-  let y_ = batch_norm_conv2d_op_gpu(shape1, stats_cfg, stats_ctrl, param_vars, x_.clone());
+  let y_dim = proj_shape.conv2d_output_dim(x_dim);
+  assert_eq!(y_dim, shape1.conv2d_output_dim(x_dim));
+  let proj_x_ = batch_norm_conv2d_op_gpu(x_dim, proj_shape, stats_cfg, stats_ctrl, param_vars, x_.clone());
+  let y_ = batch_norm_conv2d_op_gpu(x_dim, shape1, stats_cfg, stats_ctrl, param_vars, x_.clone());
   let y_ = y_.rect();
-  let y_ = batch_norm_conv2d_op_gpu(shape2, stats_cfg, stats_ctrl, param_vars, y_);
+  let y_ = batch_norm_conv2d_op_gpu(y_dim, shape2, stats_cfg, stats_ctrl, param_vars, y_);
   let y_ = proj_x_.add(y_);
   y_
 }
@@ -179,7 +181,7 @@ pub fn cifar10_resnet20_model_gpu(batch_sz: usize) -> CategoricalNLLLoss<DeviceB
   const_vars = const_vars.union(x_scale.vars());
   let x_ = x_scale.elem_mult(x_);
 
-  let y_ = batch_norm_conv2d_op_gpu(ConvShape{
+  let y_ = batch_norm_conv2d_op_gpu(frame_dim, ConvShape{
     axes:     conv_axes,
     kernel:   (5, 5),
     stride:   (1, 1),
@@ -187,20 +189,23 @@ pub fn cifar10_resnet20_model_gpu(batch_sz: usize) -> CategoricalNLLLoss<DeviceB
     filters:  Some(16),
   }, stats_cfg, &mut stats_ctrl, &mut param_vars, x_).rect();
 
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let conv1_dim = (32, 32, 16);
+  let y_ = residual_conv2d_op_gpu(conv1_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv1_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv1_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
 
-  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 32, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let conv2_dim = (16, 16, 32);
+  let y_ = proj_residual_conv2d_op_gpu(conv1_dim, conv_axes, (2, 2), 32, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv2_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv2_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
 
-  let y_ = proj_residual_conv2d_op_gpu(conv_axes, (2, 2), 64, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
-  let y_ = residual_conv2d_op_gpu(conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let conv3_dim = (8, 8, 64);
+  let y_ = proj_residual_conv2d_op_gpu(conv2_dim, conv_axes, (2, 2), 64, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv3_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
+  let y_ = residual_conv2d_op_gpu(conv3_dim, conv_axes, stats_cfg, &mut stats_ctrl, &mut param_vars, y_).rect();
 
   let y_ = y_.flatten();
-  let y_ = linear_op_gpu(8 * 8 * 64, 10, false, &mut param_vars, y_);
+  let y_ = linear_op_gpu(conv3_dim.flat_len(), 10, false, &mut param_vars, y_);
 
   let (prob_, loss_) = softmax_nll_loss(y_, label_.clone());
   prob_vars = prob_vars.union(prob_.vars());
