@@ -7,4 +7,5 @@ extern crate devicemem_cuda;
 extern crate superlearn;
 
 //pub mod inception;
+pub mod nn;
 pub mod resnet;

@@ -1,3 +1,5 @@
+use nn::*;
+
 use arraydiff::prelude::*;
 use arraydiff::ops::*;
 use arraydiff::ops::cuda::*;
@@ -7,91 +9,6 @@ use devicemem_cuda::prelude::*;
 use superlearn::templates::*;
 
 use std::rc::{Rc};
-
-const EPSILON: f64 = 1.0e-12;
-
-pub fn linear_op_gpu<Op>(in_dim: usize, filters: usize, bias: bool, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray1d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray1d<f32>> {
-  let w1 = src({
-    //let x = x_.data();
-    move |txn, node| {
-      //let x_dim = x.val.get(txn, node).dim();
-      DeviceArray2d::<f32>::zeros((filters, in_dim), DeviceStream::implicit().conn())
-    }
-  //}).initialize(init_val(normal_linear_init_gpu(0.0, 0.01)));
-  }).initialize(init_val(xavier_linear_init_gpu()));
-  param_vars.insert_all(&w1.vars());
-
-  if !bias {
-    let y_ = w1.mult(x_);
-    y_
-  } else {
-    unimplemented!();
-  }
-}
-
-pub fn conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, usize)>, bias: bool, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
-  let w1 = src({
-    //let x = x_.data();
-    move |txn, node| {
-      //let x_dim = x.val.get(txn, node).dim();
-      match shape.axes {
-        Axes((0, 1)) => DeviceArray4d::<f32>::zeros(shape.conv2d_kernel_dim(x_dim), DeviceStream::implicit().conn()),
-        _ => unimplemented!(),
-      }
-    }
-  }).initialize(init_val(kaiming_conv2d_init_gpu(shape.axes)));
-  param_vars.insert_all(&w1.vars());
-
-  if !bias {
-    let y_ = w1.conv(shape, x_);
-    y_
-  } else {
-    unimplemented!();
-  }
-}
-
-pub fn batch_norm_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
-  let w1 = src({
-    //let x = x_.data();
-    move |txn, node| {
-      //let x_dim = x.val.get(txn, node).dim();
-      match shape.axes {
-        Axes((0, 1)) => DeviceArray4d::<f32>::zeros(shape.conv2d_kernel_dim(x_dim), DeviceStream::implicit().conn()),
-        _ => unimplemented!(),
-      }
-    }
-  }).initialize(init_val(kaiming_conv2d_init_gpu(shape.axes)));
-  param_vars.insert_all(&w1.vars());
-  let a1 = src({
-    //let x = x_.data();
-    move |txn, node| {
-      //let x_dim = x.val.get(txn, node).dim();
-      match shape.axes {
-        Axes((0, 1)) => DeviceArray1d::<f32>::zeros(shape.conv2d_output_dim(x_dim).2, DeviceStream::implicit().conn()),
-        _ => unimplemented!(),
-      }
-    }
-  }).initialize(init_val(|_, w: &mut DeviceArray1d<f32>| w.as_view_mut().set_constant(1.0, DeviceStream::implicit().conn())));
-  param_vars.insert_all(&a1.vars());
-  let b1 = src({
-    //let x = x_.data();
-    move |txn, node| {
-      //let x_dim = x.val.get(txn, node).dim();
-      match shape.axes {
-        Axes((0, 1)) => DeviceArray1d::<f32>::zeros(shape.conv2d_output_dim(x_dim).2, DeviceStream::implicit().conn()),
-        _ => unimplemented!(),
-      }
-    }
-  }).initialize(init_val(|_, w: &mut DeviceArray1d<f32>| w.as_view_mut().set_constant(0.0, DeviceStream::implicit().conn())));
-  param_vars.insert_all(&b1.vars());
-
-  let y_ = w1.conv(shape, x_);
-  let y_stats = batch_stats(shape.axes, stats_cfg, stats_ctrl, y_.clone());
-  let y_ = y_.elem_normalize(shape.axes, EPSILON, y_stats.mean.clone(), y_stats.var.clone());
-  // TODO: this should really be a "broadcast mult-add" op.
-  let y_ = a1.elem_mult_add(/*Axes((0, 1)),*/ y_, b1);
-  y_
-}
 
 pub fn residual_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), axes: Axes<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
   let shape1 = ConvShape{
@@ -329,6 +246,8 @@ pub fn imagenet_resnet18_model_gpu(batch_sz: usize) -> (CategoricalNLLLoss<Devic
   let scalar_loss_ = batch_sum(loss_.clone());
   let obj = sink(scalar_loss_);
 
+  //let param_dim = obj.val_size(txn(), &mut param_vars);
+
   let loss = CategoricalNLLLoss{
     obj:          obj,
     input:        input_,
@@ -340,6 +259,7 @@ pub fn imagenet_resnet18_model_gpu(batch_sz: usize) -> (CategoricalNLLLoss<Devic
     prob_vars:    prob_vars,
     loss_vars:    loss_vars,
     const_vars:   const_vars,
+    //param_dim:    dim,
     param_vars:   param_vars,
   };
   (loss, stats_ctrl)
