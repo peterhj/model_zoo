@@ -50,7 +50,7 @@ pub fn conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, 
   }
 }
 
-pub fn batch_norm_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
+pub fn batch_norm_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvShape<(usize, usize)>, stats_cfg: BatchStatsConfig, stats_ctrl: &mut BatchStatsControl, param_vars: &mut VarSet, const_vars: &mut VarSet, x_: Rc<Op>) -> Rc<impl ArrayOp<DeviceBatchArray3d<f32>>> where Op: 'static + ArrayOp<DeviceBatchArray3d<f32>> {
   let w1 = src({
     //let x = x_.data();
     move |txn, node| {
@@ -87,10 +87,13 @@ pub fn batch_norm_conv2d_op_gpu<Op>(x_dim: (usize, usize, usize), shape: ConvSha
 
   let y_ = w1.conv(shape, x_);
   let y_stats = batch_stats(shape.axes, stats_cfg, stats_ctrl, y_.clone());
+  // NOTE: The batch stats accumulators are unreachable from the sink,
+  // so they are not really considered "const".
+  const_vars.insert_all(&y_stats.mean_fixed.vars());
+  const_vars.insert_all(&y_stats.var_fixed.vars());
   let y_ = y_.elem_normalize(shape.axes, EPSILON, y_stats.mean_branch.clone(), y_stats.var_branch.clone());
   //let y_ = y_.elem_normalize(shape.axes, EPSILON, y_stats.mean.clone(), y_stats.var.clone());
   // TODO: this should really be a "broadcast mult-add" op.
   let y_ = a1.elem_mult_add(/*Axes((0, 1)),*/ y_, b1);
   y_
 }
-
